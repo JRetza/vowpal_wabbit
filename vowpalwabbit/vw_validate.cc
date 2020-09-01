@@ -1,8 +1,6 @@
-/*
-Copyright (c) by respective owners including Yahoo!, Microsoft, and
-individual contributors. All rights reserved.  Released under a BSD (revised)
-license as described in the file LICENSE.
-*/
+// Copyright (c) by respective owners including Yahoo!, Microsoft, and
+// individual contributors. All rights reserved. Released under a BSD (revised)
+// license as described in the file LICENSE.
 #include "global_data.h"
 #include "vw_validate.h"
 #include "vw_versions.h"
@@ -34,4 +32,4 @@ void validate_num_bits(vw& all)
   if (all.num_bits > sizeof(size_t) * 8 - 3)
     THROW("Only " << sizeof(size_t) * 8 - 3 << " or fewer bits allowed.  If this is a serious limit, speak up.");
 }
-}
+}  // namespace VW

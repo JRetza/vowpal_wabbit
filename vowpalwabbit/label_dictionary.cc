@@ -1,17 +1,19 @@
+// Copyright (c) by respective owners including Yahoo!, Microsoft, and
+// individual contributors. All rights reserved. Released under a BSD (revised)
+// license as described in the file LICENSE.
+
 #include "reductions.h"
 #include "cost_sensitive.h"
 #include "label_dictionary.h"
 
 namespace LabelDict
 {
-size_t hash_lab(size_t lab) { return 328051 + 94389193 * lab; }
-
-void del_example_namespace(example& ec, char ns, features& fs)
+void del_example_namespace(example& ec, namespace_index ns, features& fs)
 {
   // print_update is called after this del_example_namespace,
   // so we need to keep the ec.num_features correct,
   // so shared features are included in the reported number of "current features"
-  //ec.num_features -= numf;
+  // ec.num_features -= numf;
   features& del_target = ec.feature_space[(size_t)ns];
   assert(del_target.size() >= fs.size());
   assert(ec.indices.size() > 0);
@@ -23,10 +25,10 @@ void del_example_namespace(example& ec, char ns, features& fs)
   del_target.sum_feat_sq -= fs.sum_feat_sq;
 }
 
-void add_example_namespace(example& ec, char ns, features& fs)
+void add_example_namespace(example& ec, namespace_index ns, features& fs)
 {
   bool has_ns = false;
-  for (size_t i=0; i<ec.indices.size(); i++)
+  for (size_t i = 0; i < ec.indices.size(); i++)
     if (ec.indices[i] == (size_t)ns)
     {
       has_ns = true;
@@ -53,60 +55,49 @@ void add_example_namespaces_from_example(example& target, example& source)
 {
   for (namespace_index idx : source.indices)
   {
-    if (idx == constant_namespace) continue;
-    add_example_namespace(target, (char)idx, source.feature_space[idx]);
+    if (idx == constant_namespace)
+      continue;
+    add_example_namespace(target, idx, source.feature_space[idx]);
   }
 }
 
 void del_example_namespaces_from_example(example& target, example& source)
 {
-  if (source.indices.size() == 0) // making sure we can deal with empty shared example
+  if (source.indices.size() == 0)  // making sure we can deal with empty shared example
     return;
   namespace_index* idx = source.indices.end();
   idx--;
-  for (; idx>=source.indices.begin(); idx--)
+  for (; idx >= source.indices.begin(); idx--)
   {
-    if (*idx == constant_namespace) continue;
-    del_example_namespace(target, (char)*idx, source.feature_space[*idx]);
+    if (*idx == constant_namespace)
+      continue;
+    del_example_namespace(target, *idx, source.feature_space[*idx]);
   }
 }
 
 void add_example_namespace_from_memory(label_feature_map& lfm, example& ec, size_t lab)
 {
-  size_t lab_hash = hash_lab(lab);
-  features& res = lfm.get(lab, lab_hash);
-  if (res.size() == 0) return;
-  add_example_namespace(ec, 'l', res);
+  auto res_iter = lfm.find(lab);
+  if (res_iter == lfm.end())
+    return;
+  add_example_namespace(ec, static_cast<unsigned char>('l'), res_iter->second);
 }
 
 void del_example_namespace_from_memory(label_feature_map& lfm, example& ec, size_t lab)
 {
-  size_t lab_hash = hash_lab(lab);
-  features& res = lfm.get(lab, lab_hash);
-  if (res.size() == 0) return;
-  del_example_namespace(ec, 'l', res);
+  auto res_iter = lfm.find(lab);
+  if (res_iter == lfm.end())
+    return;
+  del_example_namespace(ec, static_cast<unsigned char>('l'), res_iter->second);
 }
 
 void set_label_features(label_feature_map& lfm, size_t lab, features& fs)
 {
-  size_t lab_hash = hash_lab(lab);
-  if (lfm.contains(lab, lab_hash)) return;
-  lfm.put_after_get(lab, lab_hash, fs);
+  if (lfm.find(lab) == lfm.end())
+    return;
+  features tmp_features;
+  tmp_features.deep_copy_from(fs);
+  lfm.emplace(lab, std::move(tmp_features));
 }
 
-void free_label_features(label_feature_map& lfm)
-{
-  void* label_iter = lfm.iterator();
-  while (label_iter != nullptr)
-  {
-    features *res = lfm.iterator_get_value(label_iter);
-    res->values.delete_v();
-    res->indicies.delete_v();
-    res->space_names.delete_v();
-
-    label_iter = lfm.iterator_next(label_iter);
-  }
-  lfm.clear();
-  lfm.delete_v();
-}
-}
+}  // namespace LabelDict

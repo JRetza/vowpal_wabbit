@@ -1,22 +1,21 @@
-/*
-  Copyright (c) by respective owners including Yahoo!, Microsoft, and
-  individual contributors. All rights reserved.  Released under a BSD (revised)
-  license as described in the file LICENSE.
-*/
-#include <float.h>
-#include <errno.h>
+// Copyright (c) by respective owners including Yahoo!, Microsoft, and
+// individual contributors. All rights reserved. Released under a BSD (revised)
+// license as described in the file LICENSE.
+
+#include <cfloat>
+#include <cerrno>
 
 #include "reductions.h"
 #include "vw.h"
 
-using namespace std;
-using namespace LEARNER;
+using namespace VW::LEARNER;
+using namespace VW::config;
 
 namespace
 {
 const float max_multiplier = 1000.f;
-const size_t baseline_enabled_idx = 1357; // feature index for enabling baseline
-}
+const size_t baseline_enabled_idx = 1357;  // feature index for enabling baseline
+}  // namespace
 
 namespace BASELINE
 {
@@ -58,17 +57,24 @@ bool baseline_enabled(example* ec)
   }
   return false;
 }
-}
+}  // namespace BASELINE
 
 struct baseline
 {
   example* ec;
   vw* all;
-  bool lr_scaling; // whether to scale baseline learning rate based on max label
+  bool lr_scaling;  // whether to scale baseline learning rate based on max label
   float lr_multiplier;
-  bool global_only; // only use a global constant for the baseline
+  bool global_only;  // only use a global constant for the baseline
   bool global_initialized;
-  bool check_enabled; // only use baseline when the example contains enabled flag
+  bool check_enabled;  // only use baseline when the example contains enabled flag
+
+  ~baseline()
+  {
+    if (ec)
+      VW::dealloc_example(simple_label.delete_label, *ec);
+    free(ec);
+  }
 };
 
 void init_global(baseline& data)
@@ -79,13 +85,13 @@ void init_global(baseline& data)
   data.ec->indices.push_back(constant_namespace);
   // different index from constant to avoid conflicts
   data.ec->feature_space[constant_namespace].push_back(
-    1, ((constant - 17) * data.all->wpp) << data.all->weights.stride_shift());
+      1, ((constant - 17) * data.all->wpp) << data.all->weights.stride_shift());
   data.ec->total_sum_feat_sq++;
   data.ec->num_features++;
 }
 
 template <bool is_learn>
-void predict_or_learn(baseline& data, base_learner& base, example& ec)
+void predict_or_learn(baseline& data, single_learner& base, example& ec)
 {
   // no baseline if check_enabled is true and example contains flag
   if (data.check_enabled && !BASELINE::baseline_enabled(&ec))
@@ -115,7 +121,7 @@ void predict_or_learn(baseline& data, base_learner& base, example& ec)
 
   if (is_learn)
   {
-    const float pred = ec.pred.scalar; // save 'safe' prediction
+    const float pred = ec.pred.scalar;  // save 'safe' prediction
 
     // now learn
     data.ec->l.simple = ec.l.simple;
@@ -132,8 +138,7 @@ void predict_or_learn(baseline& data, base_learner& base, example& ec)
       float multiplier = data.lr_multiplier;
       if (multiplier == 0)
       {
-        multiplier = max<float>(0.0001f,
-                                max<float>(abs(data.all->sd->min_label), abs(data.all->sd->max_label)));
+        multiplier = std::max(0.0001f, std::max(std::abs(data.all->sd->min_label), std::abs(data.all->sd->max_label)));
         if (multiplier > max_multiplier)
           multiplier = max_multiplier;
       }
@@ -159,30 +164,69 @@ void predict_or_learn(baseline& data, base_learner& base, example& ec)
   }
 }
 
-void finish(baseline& data)
+float sensitivity(baseline& data, base_learner& base, example& ec)
 {
-  VW::dealloc_example(simple_label.delete_label, *data.ec);
-  free(data.ec);
+  // no baseline if check_enabled is true and example contains flag
+  if (data.check_enabled && !BASELINE::baseline_enabled(&ec))
+    return base.sensitivity(ec);
+
+  if (!data.global_only)
+    THROW("sensitivity for baseline without --global_only not implemented");
+
+  // sensitivity of baseline term
+  VW::copy_example_metadata(/*audit=*/false, data.ec, &ec);
+  data.ec->l.simple.label = ec.l.simple.label;
+  data.ec->pred.scalar = ec.pred.scalar;
+  // std::cout << "before base" << std::endl;
+  const float baseline_sens = base.sensitivity(*data.ec);
+  // std::cout << "base sens: " << baseline_sens << std::endl;
+
+  // sensitivity of residual
+  as_singleline(&base)->predict(*data.ec);
+  ec.l.simple.initial = data.ec->pred.scalar;
+  const float sens = base.sensitivity(ec);
+  // std::cout << " residual sens: " << sens << std::endl;
+  return baseline_sens + sens;
 }
 
-base_learner* baseline_setup(arguments& arg)
+base_learner* baseline_setup(options_i& options, vw& all)
 {
   auto data = scoped_calloc_or_throw<baseline>();
-  if (arg.new_options("Baseline options")
-      .critical("baseline", "Learn an additive baseline (from constant features) and a residual separately in regression.")
-      ("lr_multiplier", data->lr_multiplier, "learning rate multiplier for baseline model")
-      .keep(data->global_only, "global_only", "use separate example with only global constant for baseline predictions")
-      .keep(data->check_enabled, "check_enabled", "only use baseline when the example contains enabled flag").missing())
+  bool baseline_option = false;
+  std::string loss_function;
+
+  option_group_definition new_options("Baseline options");
+  new_options
+      .add(make_option("baseline", baseline_option)
+               .keep()
+               .help("Learn an additive baseline (from constant features) and a residual separately in regression."))
+      .add(make_option("lr_multiplier", data->lr_multiplier).help("learning rate multiplier for baseline model"))
+      .add(make_option("global_only", data->global_only)
+               .keep()
+               .help("use separate example with only global constant for baseline predictions"))
+      .add(make_option("check_enabled", data->check_enabled)
+               .keep()
+               .help("only use baseline when the example contains enabled flag"));
+  options.add_and_parse(new_options);
+
+  if (!baseline_option)
     return nullptr;
+
   // initialize baseline example
   data->ec = VW::alloc_examples(simple_label.label_size, 1);
-  data->ec->in_use = true;
-  data->all = arg.all;
-  if (!arg.vm.count("loss_function") || arg.vm["loss_function"].as<string>() != "logistic" )
+  data->ec->interactions = &all.interactions;
+
+  data->all = &all;
+
+  auto loss_function_type = all.loss->getType();
+  if (loss_function_type != "logistic")
     data->lr_scaling = true;
 
-  learner<baseline>& l = init_learner(data, setup_base(arg), predict_or_learn<true>, predict_or_learn<false>);
-  l.set_finish(finish);
+  auto base = as_singleline(setup_base(options, all));
+
+  learner<baseline, example>& l = init_learner(data, base, predict_or_learn<true>, predict_or_learn<false>);
+
+  l.set_sensitivity(sensitivity);
 
   return make_base(l);
 }

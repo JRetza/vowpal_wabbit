@@ -1,116 +1,144 @@
-/*
-Copyright (c) by respective owners including Yahoo!, Microsoft, and
-individual contributors. All rights reserved.  Released under a BSD (revised)
-license as described in the file LICENSE.
- */
-#include <float.h>
+// Copyright (c) by respective owners including Yahoo!, Microsoft, and
+// individual contributors. All rights reserved. Released under a BSD (revised)
+// license as described in the file LICENSE.
+#include <cfloat>
 #include <sstream>
 #include <queue>
+#include <utility>
 
-#include "reductions.h"
+#include "topk.h"
+#include "learner.h"
+#include "parse_args.h"
 #include "vw.h"
-using namespace std;
 
-typedef pair<float, v_array<char> > scored_example;
+using namespace VW::config;
 
-struct compare_scored_examples
+namespace VW
 {
-  bool operator()(scored_example const& a, scored_example const& b) const
-  { return a.first > b.first; }
+class topk
+{
+  using container_t = std::multimap<float, v_array<char>>;
+
+ public:
+  using const_iterator_t = container_t::const_iterator;
+  topk(uint32_t k_num);
+
+  void predict(VW::LEARNER::single_learner& base, multi_ex& ec_seq);
+  void learn(VW::LEARNER::single_learner& base, multi_ex& ec_seq);
+  std::pair<const_iterator_t, const_iterator_t> get_container_view();
+  void clear_container();
+
+ private:
+  void update_priority_queue(float pred, v_array<char>& tag);
+
+  const uint32_t _k_num;
+  container_t _pr_queue;
 };
+}  // namespace VW
 
-struct topk
-{
-  uint32_t B; //rec number
-  priority_queue<scored_example, vector<scored_example>, compare_scored_examples > pr_queue;
-};
+VW::topk::topk(uint32_t k_num) : _k_num(k_num) {}
 
-void print_result(int f, priority_queue<scored_example, vector<scored_example>, compare_scored_examples > &pr_queue)
+void VW::topk::predict(VW::LEARNER::single_learner& base, multi_ex& ec_seq)
 {
-  if (f >= 0)
+  for (auto ec : ec_seq)
   {
-    char temp[30];
-    std::stringstream ss;
-    scored_example tmp_example;
-    while(!pr_queue.empty())
-    {
-      tmp_example = pr_queue.top();
-      pr_queue.pop();
-      sprintf(temp, "%f", tmp_example.first);
-      ss << temp;
-      ss << ' ';
-      print_tag(ss, tmp_example.second);
-      ss << ' ';
-      ss << '\n';
-    }
-    ss << '\n';
-    ssize_t len = ss.str().size();
-#ifdef _WIN32
-    ssize_t t = _write(f, ss.str().c_str(), (unsigned int)len);
-#else
-    ssize_t t = write(f, ss.str().c_str(), (unsigned int)len);
-#endif
-    if (t != len)
-      cerr << "write error: " << strerror(errno) << endl;
+    base.predict(*ec);
+    update_priority_queue(ec->pred.scalar, ec->tag);
   }
 }
 
-void output_example(vw& all, topk& d, example& ec)
+void VW::topk::learn(VW::LEARNER::single_learner& base, multi_ex& ec_seq)
+{
+  for (auto ec : ec_seq)
+  {
+    base.learn(*ec);
+    update_priority_queue(ec->pred.scalar, ec->tag);
+  }
+}
+
+void VW::topk::update_priority_queue(float pred, v_array<char>& tag)
+{
+  if (_pr_queue.size() < _k_num)
+  {
+    _pr_queue.insert({pred, tag});
+  }
+  else if (_pr_queue.begin()->first < pred)
+  {
+    _pr_queue.erase(_pr_queue.begin());
+    _pr_queue.insert({pred, tag});
+  }
+}
+
+std::pair<VW::topk::const_iterator_t, VW::topk::const_iterator_t> VW::topk::get_container_view()
+{
+  return {_pr_queue.cbegin(), _pr_queue.cend()};
+}
+
+void VW::topk::clear_container() { _pr_queue.clear(); }
+
+void print_result(
+    VW::io::writer* file_descriptor, std::pair<VW::topk::const_iterator_t, VW::topk::const_iterator_t> const& view)
+{
+  if (file_descriptor != nullptr)
+  {
+    std::stringstream ss;
+    for (auto it = view.first; it != view.second; it++)
+    {
+      ss << std::fixed << it->first << " ";
+      print_tag_by_ref(ss, it->second);
+      ss << " \n";
+    }
+    ss << '\n';
+    ssize_t len = ss.str().size();
+    auto t = file_descriptor->write(ss.str().c_str(), len);
+    if (t != len)
+      std::cerr << "write error: " << VW::strerror_to_string(errno) << std::endl;
+  }
+}
+
+void output_example(vw& all, example& ec)
 {
   label_data& ld = ec.l.simple;
 
   all.sd->update(ec.test_only, ld.label != FLT_MAX, ec.loss, ec.weight, ec.num_features);
   if (ld.label != FLT_MAX)
-    all.sd->weighted_labels += ld.label * ec.weight;
-
-  if (example_is_newline(ec))
-    for (int sink : all.final_prediction_sink)
-      print_result(sink, d.pr_queue);
+    all.sd->weighted_labels += ((double)ld.label) * ec.weight;
 
   print_update(all, ec);
 }
 
 template <bool is_learn>
-void predict_or_learn(topk& d, LEARNER::base_learner& base, example& ec)
+void predict_or_learn(VW::topk& d, VW::LEARNER::single_learner& base, multi_ex& ec_seq)
 {
-  if (example_is_newline(ec)) return;//do not predict newline
-
   if (is_learn)
-    base.learn(ec);
+    d.learn(base, ec_seq);
   else
-    base.predict(ec);
-
-  if(d.pr_queue.size() < d.B)
-    d.pr_queue.push(make_pair(ec.pred.scalar, ec.tag));
-
-  else if(d.pr_queue.top().first < ec.pred.scalar)
-  {
-    d.pr_queue.pop();
-    d.pr_queue.push(make_pair(ec.pred.scalar, ec.tag));
-  }
+    d.predict(base, ec_seq);
 }
 
-void finish_example(vw& all, topk& d, example& ec)
+void finish_example(vw& all, VW::topk& d, multi_ex& ec_seq)
 {
-  output_example(all, d, ec);
-  VW::finish_example(all, &ec);
+  for (auto ec : ec_seq) output_example(all, *ec);
+  for (auto& sink : all.final_prediction_sink) print_result(sink.get(), d.get_container_view());
+  d.clear_container();
+  VW::finish_example(all, ec_seq);
 }
 
-void finish(topk& d)
+VW::LEARNER::base_learner* topk_setup(options_i& options, vw& all)
 {
-  d.pr_queue = priority_queue<scored_example, vector<scored_example>, compare_scored_examples >();
-}
+  uint32_t K;
+  option_group_definition new_options("Top K");
+  new_options.add(make_option("top", K).keep().help("top k recommendation"));
+  options.add_and_parse(new_options);
 
-LEARNER::base_learner* topk_setup(arguments& arg)
-{
-  auto data = scoped_calloc_or_throw<topk>();
-  if (arg.new_options("Top K").critical("top", data->B, "top k recommendation").missing())
+  if (!options.was_supplied("top"))
     return nullptr;
 
-  LEARNER::learner<topk>& l = init_learner(data, setup_base(arg), predict_or_learn<true>,
-                              predict_or_learn<false>);
+  auto data = scoped_calloc_or_throw<VW::topk>(K);
+
+  VW::LEARNER::learner<VW::topk, multi_ex>& l =
+      init_learner(data, as_singleline(setup_base(options, all)), predict_or_learn<true>, predict_or_learn<false>);
   l.set_finish_example(finish_example);
-  l.set_finish(finish);
 
   return make_base(l);
 }

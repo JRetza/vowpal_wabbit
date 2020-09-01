@@ -1,163 +1,124 @@
-/*
-Copyright (c) by respective owners including Yahoo!, Microsoft, and
-individual contributors. All rights reserved.  Released under a BSD (revised)
-license as described in the file LICENSE.
- */
+// Copyright (c) by respective owners including Yahoo!, Microsoft, and
+// individual contributors. All rights reserved. Released under a BSD (revised)
+// license as described in the file LICENSE.
 #include "io_buf.h"
-#include <stdio.h>
-#ifdef WIN32
-#include <winsock2.h>
-#endif
 
-size_t buf_read(io_buf &i, char* &pointer, size_t n)
+size_t io_buf::buf_read(char*& pointer, size_t n)
 {
-  //return a pointer to the next n bytes.  n must be smaller than the maximum size.
-  if (i.head + n <= i.space.end())
+  // return a pointer to the next n bytes.  n must be smaller than the maximum size.
+  if (head + n <= space.end())
   {
-    pointer = i.head;
-    i.head += n;
+    pointer = head;
+    head += n;
     return n;
   }
-  else // out of bytes, so refill.
+  else  // out of bytes, so refill.
   {
-    if (i.head != i.space.begin()) //There exists room to shift.
+    if (head != space.begin())  // There exists room to shift.
     {
       // Out of buffer so swap to beginning.
-      size_t left = i.space.end() - i.head;
-      memmove(i.space.begin(), i.head, left);
-      i.head = i.space.begin();
-      i.space.end() = i.space.begin() + left;
+      size_t left = space.end() - head;
+      memmove(space.begin(), head, left);
+      head = space.begin();
+      space.end() = space.begin() + left;
     }
-    if (i.fill(i.files[i.current]) > 0) // read more bytes from current file if present
-      return buf_read(i, pointer, n);// more bytes are read.
-    else if (++i.current < i.files.size())
-      return buf_read(i, pointer, n);// No more bytes, so go to next file and try again.
+    if (current < input_files.size() && fill(input_files[current].get()) > 0)  // read more bytes from current file if present
+      return buf_read(pointer, n);  // more bytes are read.
+    else if (++current < input_files.size())
+      return buf_read(pointer, n);  // No more bytes, so go to next file and try again.
     else
     {
-      //no more bytes to read, return all that we have left.
-      pointer = i.head;
-      i.head = i.space.end();
-      return i.space.end() - pointer;
+      // no more bytes to read, return all that we have left.
+      pointer = head;
+      head = space.end();
+      return space.end() - pointer;
     }
   }
 }
 
-bool isbinary(io_buf &i)
+bool io_buf::isbinary()
 {
-  if (i.space.end() == i.head)
-    if (i.fill(i.files[i.current]) <= 0)
+  if (space.end() == head)
+    if (fill(input_files[current].get()) <= 0)
       return false;
 
-  bool ret = (*i.head == 0);
+  bool ret = (*head == 0);
   if (ret)
-    i.head++;
+    head++;
 
   return ret;
 }
 
-size_t readto(io_buf &i, char* &pointer, char terminal)
+size_t io_buf::readto(char*& pointer, char terminal)
 {
-  //Return a pointer to the bytes before the terminal.  Must be less than the buffer size.
-  pointer = i.head;
-  while (pointer < i.space.end() && *pointer != terminal)
-    pointer++;
-  if (pointer != i.space.end())
+  // Return a pointer to the bytes before the terminal.  Must be less than the buffer size.
+  pointer = head;
+  while (pointer < space.end() && *pointer != terminal) pointer++;
+  if (pointer != space.end())
   {
-    size_t n = pointer - i.head;
-    i.head = pointer+1;
+    size_t n = pointer - head;
+    head = pointer + 1;
     pointer -= n;
-    return n+1;
+    return n + 1;
   }
   else
   {
-    if (i.space.end() == i.space.end_array)
+    if (space.end() == space.end_array)
     {
-      size_t left = i.space.end() - i.head;
-      memmove(i.space.begin(), i.head, left);
-      i.head = i.space.begin();
-      i.space.end() = i.space.begin()+left;
-      pointer = i.space.end();
+      size_t left = space.end() - head;
+      memmove(space.begin(), head, left);
+      head = space.begin();
+      space.end() = space.begin() + left;
+      pointer = space.end();
     }
-    if (i.current < i.files.size() && i.fill(i.files[i.current]) > 0)// more bytes are read.
-      return readto(i,pointer,terminal);
-    else if (++i.current < i.files.size())  //no more bytes, so go to next file.
-      return readto(i,pointer,terminal);
-    else //no more bytes to read, return everything we have.
+    if (current < input_files.size() && fill(input_files[current].get()) > 0)  // more bytes are read.
+      return readto(pointer, terminal);
+    else if (++current < input_files.size())  // no more bytes, so go to next file.
+      return readto(pointer, terminal);
+    else  // no more bytes to read, return everything we have.
     {
-      size_t n = pointer - i.head;
-      i.head = pointer;
+      size_t n = pointer - head;
+      head = pointer;
       pointer -= n;
       return n;
     }
   }
 }
 
-void buf_write(io_buf &o, char* &pointer, size_t n)
+void io_buf::buf_write(char*& pointer, size_t n)
 {
-  //return a pointer to the next n bytes to write into.
-  if (o.head + n <= o.space.end_array)
+  // return a pointer to the next n bytes to write into.
+  if (head + n <= space.end_array)
   {
-    pointer = o.head;
-    o.head += n;
+    pointer = head;
+    head += n;
   }
-  else // Time to dump the file
+  else  // Time to dump the file
   {
-    if (o.head != o.space.begin())
-      o.flush();
-    else // Array is short, so increase size.
+    if (head != space.begin())
+      flush();
+    else  // Array is short, so increase size.
     {
-      o.space.resize(2*(o.space.end_array - o.space.begin()));
-      o.space.end() = o.space.begin();
-      o.head = o.space.begin();
+      space.resize(2 * (space.end_array - space.begin()));
+      space.end() = space.begin();
+      head = space.begin();
     }
-    buf_write (o, pointer,n);
+    buf_write(pointer, n);
   }
 }
 
-bool io_buf::is_socket(int f)
+size_t io_buf::copy_to(void *dst, size_t max_size)
 {
-  // this appears to work in practice, but could probably be done in a cleaner fashion
-#ifdef _WIN32
-  const int _nhandle = _getmaxstdio()/2;
-  return f >= _nhandle;
-#else
-  const int _nhandle = 32;
-  return f >= _nhandle;
-#endif
+  size_t to_copy = std::min(unflushed_bytes_count(), max_size);
+  memcpy(dst, space.begin(), to_copy);
+  return to_copy;
 }
 
-ssize_t io_buf::read_file_or_socket(int f, void* buf, size_t nbytes)
+void io_buf::replace_buffer(char *buff, size_t capacity)
 {
-#ifdef _WIN32
-  if (is_socket(f))
-    return recv(f, reinterpret_cast<char*>(buf), static_cast<int>(nbytes), 0);
-  else
-    return _read(f, buf, (unsigned int)nbytes);
-#else
-  return read(f, buf, (unsigned int)nbytes);
-#endif
-}
-
-ssize_t io_buf::write_file_or_socket(int f, const void* buf, size_t nbytes)
-{
-#ifdef _WIN32
-  if (is_socket(f))
-    return send(f, reinterpret_cast<const char*>(buf), static_cast<int>(nbytes), 0);
-  else
-    return _write(f, buf, (unsigned int)nbytes);
-#else
-  return write(f, buf, (unsigned int)nbytes);
-#endif
-}
-
-void io_buf::close_file_or_socket(int f)
-{
-#ifdef _WIN32
-  if (io_buf::is_socket(f))
-    closesocket(f);
-  else
-    _close(f);
-#else
-  close(f);
-#endif
+  // TODO the following should be moved to v_array
+  space.delete_v();
+  space.begin() = buff;
+  space.end_array = space.end() = buff + capacity;
+  head = buff;
 }
